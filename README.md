@@ -11,17 +11,26 @@ This script uses the Az module to connect and gather Azure policy compliance sta
 
 ## Options
 - Subscription selection mode
+  
   <img width="267" height="113" alt="image" src="https://github.com/user-attachments/assets/9a465109-7032-4b90-84ce-da1c19f3ea37" />
+  
 - Subscription selection
+  
   <img width="742" height="163" alt="image" src="https://github.com/user-attachments/assets/35425695-88c2-49ab-afe9-0a0679bd4808" />
+  
 - File output selection
+  
   <img width="396" height="108" alt="image" src="https://github.com/user-attachments/assets/afb6ea6c-da51-4e0b-9227-19c5072b5d33" />
 
 ## Script in action:
 - Querying the policy states
+  
   <img width="1116" height="612" alt="image" src="https://github.com/user-attachments/assets/6fa0e1de-1f49-4aad-abb1-dc7fb2932260" />
+  
 - Completed successfully:
+  
   <img width="883" height="201" alt="image" src="https://github.com/user-attachments/assets/2dae36b6-b726-4465-8cea-595925cd7beb" />
+  
 
 
 
