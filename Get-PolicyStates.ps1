@@ -1,6 +1,3 @@
-
-
-
 # Verify required Azure PowerShell modules are installed
 $requiredModules = @('Az.Accounts', 'Az.PolicyInsights')
 
@@ -20,9 +17,8 @@ foreach ($mod in $requiredModules) {
 # Confirmation that all required modules are present
 Write-Host "All required Azure PowerShell modules (Az.Accounts, Az.PolicyInsights) are installed." -ForegroundColor Green
 
-
 # Auto‑detect an existing Azure session or log in
-$existingContext = Get-AzContext -ErrorAction SilentlyContinue   # <‑ keep this
+$existingContext = Get-AzContext -ErrorAction SilentlyContinue
 
 if (-not $existingContext) {
     Write-Host "No active Az session detected - logging in now…"
@@ -47,12 +43,12 @@ else {
     Write-Host "Active Az session detected. Using existing context:" -ForegroundColor Cyan
 }
 
-# ----------------------------------------------------------------------
-# Only run the manual subscription‑selection UI if we started with an
-# already‑logged‑in session *and* that session had multiple subscriptions.
-# If we just logged in above, skip this block entirely.
-if ($existingContext) {
-    Write-Host "Select a subscription:" -ForegroundColor Cyan
+# Function to select subscriptions with removal capability
+function Select-Subscriptions {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$SelectionMode
+    )
 
     $subscriptions = Get-AzSubscription | Sort-Object Name
     if ($subscriptions.Count -eq 0) {
@@ -60,15 +56,14 @@ if ($existingContext) {
         exit
     }
 
-    if ($subscriptions.Count -eq 1) {
-        $selectedSubId   = $subscriptions[0].Id
-        $selectedSubName = $subscriptions[0].Name
-    }
-    else {
+    $selectedSubscriptions = @()
+
+    if ($SelectionMode -eq "Single") {
         Write-Host "`nAvailable subscriptions:" -ForegroundColor Cyan
         for ($i=0; $i -lt $subscriptions.Count; $i++) {
             Write-Host "$($i+1)) $($subscriptions[$i].Name) ($($subscriptions[$i].Id))"
         }
+
         do {
             $choice = Read-Host "`nEnter the subscription number you want to query policy states against (or 'q' to exit)"
             if ($choice -eq 'q') { exit }
@@ -79,123 +74,263 @@ if ($existingContext) {
             Write-Host "Invalid input. Please enter a number between 1 and $($subscriptions.Count)." -ForegroundColor Yellow
         } while ($true)
 
-        $selectedIndex   = [int]$choice - 1
-        $selectedSubId   = $subscriptions[$selectedIndex].Id
-        $selectedSubName = $subscriptions[$selectedIndex].Name
+        $selectedIndex = [int]$choice - 1
+        $selectedSubscriptions += $subscriptions[$selectedIndex]
     }
-
-    Set-AzContext -SubscriptionId $selectedSubId | Out-Null
-}
-
-# Get the active context after login (or after the UI selection)
-$current = Get-AzContext
-
-Write-Host "`nUsing subscription: $($current.Subscription.Name) ($($current.Subscription.Id))`n"
-
-
-
-
-
-
-#Arrays
-$PolicyStates = @() #Array for all Policy States
-#$PolicyExemptions = @() #Array for Policy Exemptions - Coming soon
-
-$LoopPolicyDefinitionName = 'String'
-$LoopPolicyDefinitionDescriptiveName = 'String'
-$LoopPolicySetDefinitionName = 'String'
-$LoopPolicSetDefinitionDescriptiveName = 'String'
-
-#Report Variables
-$report = New-Object psobject #initialize report array
-$report | Add-Member -MemberType NoteProperty -name SubscriptionID -Value $null
-$report | Add-Member -MemberType NoteProperty -name PolicySetDefinitionName -Value $null
-$report | Add-Member -MemberType NoteProperty -name PolicySetDefinitionDescriptiveName -Value $null
-$report | Add-Member -MemberType NoteProperty -name PolicyDefinitionName -Value $null
-$report | Add-Member -MemberType NoteProperty -name PolicyDefinitionDescriptiveName -Value $null
-$report | Add-Member -MemberType NoteProperty -name PolicySetDefinitionCategory -Value $null
-$report | Add-Member -MemberType NoteProperty -name ResourceGroup -Value $null
-$report | Add-Member -MemberType NoteProperty -name ResourceID -Value $null
-$report | Add-Member -MemberType NoteProperty -name ResourceLocation -Value $null
-$report | Add-Member -MemberType NoteProperty -name ResourceType -Value $null
-$report | Add-Member -MemberType NoteProperty -name PolicyDefinitionAction -Value $null
-$report | Add-Member -MemberType NoteProperty -name ComplianceState -Value $null
-
-
-# Prepare the CSV file – delete if it already exists, then create a fresh file with the correct header.
-$csvPath = "Output-PolicyComplianceStates.csv"
-
-if (Test-Path -LiteralPath $csvPath) {
-    Remove-Item -LiteralPath $csvPath -Force
-}
-
-# Export the *empty* report object once – this writes only the headers
-$report | Export-Csv -Path $csvPath -NoTypeInformation
-
-#Get all Policy States (Uncomment the top 3000 line below if running in issues due to it not being present resulting in partial results. More than 3000 entries apparently causes problems(https://github.com/MicrosoftDocs/azure-docs/issues/41368))
-#If you have more than 3000 policy states in your subscription then consider adapting this script to run against a smaller scope (e.g. resource group)
-#$PolicyStates = Get-AzPolicyState -Top 3000| Select-Object   SubscriptionID, PolicySetDefinitionName, PolicyDefinitionName, PolicyDefinitionAction, PolicySetDefinitionCategory, ResourceGroup, ResourceID, ResourceLocation, ResourceType, ComplianceState |Sort-Object SubscriptionID, PolicySetDefinitionName, PolicyDefinitionName
-
-#comment this line if you uncomment the above line
-$PolicyStates = Get-AzPolicyState | Select-Object   SubscriptionID, PolicySetDefinitionName, PolicyDefinitionName, PolicyDefinitionAction, PolicySetDefinitionCategory, ResourceGroup, ResourceID, ResourceLocation, ResourceType, ComplianceState |Sort-Object SubscriptionID, PolicySetDefinitionName, PolicyDefinitionName 
-
-#Initialize count
-$Count = 1
-
-#Iterate through all policy states
-foreach ($PolicyState in $PolicyStates)
-{
-
-    Write-Host "Processing State " $Count " of " $PolicyStates.count
-    #Only call to cloud if PolicyDefinitionName is a different value then get the name for the new policy defintion 
-    if ($LoopPolicyDefinitionName -ne $PolicyState.PolicyDefinitionName)
-    {
-        $LoopPolicyDefinitionDescriptiveName = Get-AzPolicyDefinition -Name $PolicyState.PolicyDefinitionName |  Select-Object -ExpandProperty displayName
-        #Set loop variables for polciy and policy set definition names. This is to avoid mutliple calls for name for repeat names
-        $LoopPolicyDefinitionName = $PolicyState.PolicyDefinitionName
-    }
-    #Only call to cloud if PolicyDefinitionSetName is a different value then get the name foDefir the new policy defintion set
-    # Only proceed if a PolicySetDefinitionName exists (not null/empty)
-    if ($PolicyState.PolicySetDefinitionName) {
-
-        # If this is a new policy‑set name, cache its display name
-        if ($LoopPolicySetDefinitionName -ne $PolicyState.PolicySetDefinitionName) {
-            $LoopPolicSetDefinitionDescriptiveName =
-                Get-AzPolicySetDefinition -Name $PolicyState.PolicySetDefinitionName |
-                Select-Object -ExpandProperty displayName
-
-            # Cache the name so we don’t call again for the same value
-            $LoopPolicySetDefinitionName = $PolicyState.PolicySetDefinitionName
+    elseif ($SelectionMode -eq "Multiple") {
+        Write-Host "`nAvailable subscriptions:" -ForegroundColor Cyan
+        for ($i=0; $i -lt $subscriptions.Count; $i++) {
+            Write-Host "$($i+1)) $($subscriptions[$i].Name) ($($subscriptions[$i].Id))"
         }
 
+        Write-Host "`nEnter subscription numbers separated by commas (e.g. 1,3,5) or 'q' to exit"
+        do {
+            $choice = Read-Host "Enter selection"
+            if ($choice -eq 'q') { exit }
+
+            $numbers = $choice -split ',' | ForEach-Object { $_.Trim() }
+            $validNumbers = @()
+            $valid = $true
+
+            foreach ($num in $numbers) {
+                if ([int]::TryParse($num, [ref]$null) -and 
+                    $num -ge 1 -and $num -le $subscriptions.Count) {
+                    $validNumbers += [int]$num
+                } else {
+                    $valid = $false
+                    break
+                }
+            }
+
+            if ($valid -and $numbers.Count -gt 0) {
+                foreach ($num in $validNumbers) {
+                    $selectedIndex = $num - 1
+                    $selectedSubscriptions += $subscriptions[$selectedIndex]
+                }
+                break
+            } else {
+                Write-Host "Invalid input. Please enter valid numbers separated by commas." -ForegroundColor Yellow
+            }
+        } while ($true)
     }
-    else {
-        # Optional: handle missing PolicySetDefinitionName (e.g., set to empty string)
-        $LoopPolicSetDefinitionDescriptiveName = ""
-        $LoopPolicySetDefinitionName = $null
+    elseif ($SelectionMode -eq "All") {
+        $selectedSubscriptions = $subscriptions
     }
 
-
-    #Generate Report
-    $report.SubscriptionID = $PolicyState.SubscriptionId
-    $report.PolicySetDefinitionName = $LoopPolicySetDefinitionName
-    $report.PolicySetDefinitionDescriptiveName = $LoopPolicSetDefinitionDescriptiveName
-    $report.PolicyDefinitionDescriptiveName = $LoopPolicyDefinitionDescriptiveName
-    $report.PolicyDefinitionName = $LoopPolicyDefinitionName
-    $report.PolicyDefinitionAction = $PolicyState.PolicyDefinitionAction
-    $report.PolicySetDefinitionCategory = $PolicyState.PolicySetDefinitionCategory
-    $report.ResourceGroup = $PolicyState.ResourceGroup
-    $report.ResourceID = $PolicyState.ResourceID
-    $report.ResourceLocation = $PolicyState.ResourceLocation
-    $report.ResourceType = $PolicyState.ResourceType
-    $report.ComplianceState = $PolicyState.ComplianceState
-
-    
-    #Export report to CSV
-    $report| Export-CSV Output-PolicyComplianceStates.csv -Append -NoTypeInformation
-
-    #Increase count
-    $Count++
+    return $selectedSubscriptions
 }
+
+# Main subscription selection menu
+Write-Host "`nSelect subscription mode:" -ForegroundColor Cyan
+Write-Host "1) Single subscription"
+Write-Host "2) Multiple subscriptions" 
+Write-Host "3) All subscriptions"
+Write-Host "4) Exit"
+
+do {
+    $choice = Read-Host "`nEnter your choice (1-4)"
+    if ($choice -eq '4') { exit }
+    if ($choice -ge 1 -and $choice -le 4) {
+        break
+    }
+    Write-Host "Invalid input. Please enter a number between 1 and 4." -ForegroundColor Yellow
+} while ($true)
+
+$subscriptionMode = switch ($choice) {
+    1 { "Single" }
+    2 { "Multiple" }
+    3 { "All" }
+}
+
+# Get selected subscriptions based on mode
+$selectedSubscriptions = Select-Subscriptions -SelectionMode $subscriptionMode
+
+# File output selection
+Write-Host "`nSelect file output mode:" -ForegroundColor Cyan
+Write-Host "1) Single CSV file for all subscriptions"
+Write-Host "2) Separate CSV file per subscription"
+Write-Host "3) Both (single file and separate files)"
+Write-Host "4) Exit"
+
+do {
+    $fileChoice = Read-Host "`nEnter your choice (1-4)"
+    if ($fileChoice -eq '4') { exit }
+    if ($fileChoice -ge 1 -and $fileChoice -le 4) {
+        break
+    }
+    Write-Host "Invalid input. Please enter a number between 1 and 4." -ForegroundColor Yellow
+} while ($true)
+
+$fileOutputMode = switch ($fileChoice) {
+    1 { "Single" }
+    2 { "Separate" }
+    3 { "Both" }
+}
+
+# Process policy states for each selected subscription
+$csvPath = "Output-PolicyComplianceStates.csv"
+$PolicyStates = @()
+$policyDefinitionsCache = @{}
+$policySetDefinitionsCache = @{}
+
+try {
+    # Pre-fetch all policy definitions to avoid repeated API calls
+    Write-Host "Fetching all policy definitions..."
+    $allPolicyDefinitions = Get-AzPolicyDefinition -ErrorAction Stop
+    foreach ($definition in $allPolicyDefinitions) {
+        $policyDefinitionsCache[$definition.Name] = $definition.DisplayName
+    }
+
+    Write-Host "Fetching all policy set definitions..."
+    $allPolicySetDefinitions = Get-AzPolicySetDefinition -ErrorAction Stop
+    foreach ($definition in $allPolicySetDefinitions) {
+        $policySetDefinitionsCache[$definition.Name] = $definition.DisplayName
+    }
+
+    # Initialize report object
+    $reportTemplate = New-Object psobject
+    $reportTemplate | Add-Member -MemberType NoteProperty -name SubscriptionID -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name SubscriptionName -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name PolicySetDefinitionName -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name PolicySetDefinitionDescriptiveName -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name PolicyDefinitionName -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name PolicyDefinitionDescriptiveName -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name PolicySetDefinitionCategory -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name ResourceGroup -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name ResourceID -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name ResourceLocation -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name ResourceType -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name PolicyDefinitionAction -Value $null
+    $reportTemplate | Add-Member -MemberType NoteProperty -name ComplianceState -Value $null
+
+    # Handle file output modes
+    if ($fileOutputMode -eq "Single" -or $fileOutputMode -eq "Both") {
+        # Prepare the CSV file – delete if it already exists, then create a fresh file with the correct header.
+        if (Test-Path -LiteralPath $csvPath) {
+            Remove-Item -LiteralPath $csvPath -Force
+        }
+        # Export the *empty* report object once – this writes only the headers
+        $reportTemplate | Export-Csv -Path $csvPath -NoTypeInformation
+    }
+
+    # Initialize count
+    $Count = 1
+    $totalItems = 0
+
+    # Process each subscription
+    foreach ($subscription in $selectedSubscriptions) {
+        Write-Host "`nProcessing subscription: $($subscription.Name) ($($subscription.Id))" -ForegroundColor Cyan
+
+        # Set context to current subscription
+        Set-AzContext -SubscriptionId $subscription.Id | Out-Null
+
+        # Get policy states for this subscription
+        Write-Host "Fetching policy states..."
+        $subscriptionPolicyStates = Get-AzPolicyState -ErrorAction Stop | 
+                        Select-Object SubscriptionID, PolicySetDefinitionName, PolicyDefinitionName, 
+                                     PolicyDefinitionAction, PolicySetDefinitionCategory, ResourceGroup, 
+                                     ResourceID, ResourceLocation, ResourceType, ComplianceState |
+                        Sort-Object SubscriptionID, PolicySetDefinitionName, PolicyDefinitionName 
+
+        if ($null -eq $subscriptionPolicyStates) {
+            Write-Host "No policy states found for subscription: $($subscription.Name)" -ForegroundColor Yellow
+            continue
+        }
+
+        $totalItems += $subscriptionPolicyStates.Count
+
+        # Handle file output modes
+        if ($fileOutputMode -eq "Separate" -or $fileOutputMode -eq "Both") {
+            $singleCsvPath = "Output-PolicyComplianceStates-$($subscription.Name).csv"
+            if (Test-Path -LiteralPath $singleCsvPath) {
+                Remove-Item -LiteralPath $singleCsvPath -Force
+            }
+            # Export the *empty* report object once – this writes only the headers for the subscription file
+            $reportTemplate | Export-Csv -Path $singleCsvPath -NoTypeInformation
+        }
+
+        # Iterate through all policy states for this subscription
+        foreach ($PolicyState in $subscriptionPolicyStates) {
+            Write-Progress -Activity "Processing Policy States" -Status "Processing State $Count of $totalItems" -PercentComplete ($Count / $totalItems * 100)
+
+            try {
+                # Create a new report object for each policy state to avoid overwriting
+                $report = $reportTemplate | Select-Object * -ExcludeProperty PSComputerName, PSShowComputerName, PSVersionTable
+
+                # Get descriptive names from cache or API
+                $policyDefinitionDisplayName = ""
+                if ($PolicyState.PolicyDefinitionName) {
+                    if ($policyDefinitionsCache.ContainsKey($PolicyState.PolicyDefinitionName)) {
+                        $policyDefinitionDisplayName = $policyDefinitionsCache[$PolicyState.PolicyDefinitionName]
+                    } else {
+                        # Fallback to API call if not in cache (shouldn't happen)
+                        $definition = Get-AzPolicyDefinition -Name $PolicyState.PolicyDefinitionName -ErrorAction Stop
+                        $policyDefinitionDisplayName = $definition.DisplayName
+                        $policyDefinitionsCache[$PolicyState.PolicyDefinitionName] = $policyDefinitionDisplayName
+                    }
+                }
+
+                $policySetDefinitionDisplayName = ""
+                if ($PolicyState.PolicySetDefinitionName) {
+                    if ($policySetDefinitionsCache.ContainsKey($PolicyState.PolicySetDefinitionName)) {
+                        $policySetDefinitionDisplayName = $policySetDefinitionsCache[$PolicyState.PolicySetDefinitionName]
+                    } else {
+                        # Fallback to API call if not in cache (shouldn't happen)
+                        $definition = Get-AzPolicySetDefinition -Name $PolicyState.PolicySetDefinitionName -ErrorAction Stop
+                        $policySetDefinitionDisplayName = $definition.DisplayName
+                        $policySetDefinitionsCache[$PolicyState.PolicySetDefinitionName] = $policySetDefinitionDisplayName
+                    }
+                }
+
+                # Generate Report
+                $report.SubscriptionID = $PolicyState.SubscriptionId
+                $report.SubscriptionName = $subscription.Name
+                $report.PolicySetDefinitionName = $PolicyState.PolicySetDefinitionName
+                $report.PolicySetDefinitionDescriptiveName = $policySetDefinitionDisplayName
+                $report.PolicyDefinitionName = $PolicyState.PolicyDefinitionName
+                $report.PolicyDefinitionDescriptiveName = $policyDefinitionDisplayName
+                $report.PolicyDefinitionAction = $PolicyState.PolicyDefinitionAction
+                $report.PolicySetDefinitionCategory = $PolicyState.PolicySetDefinitionCategory
+                $report.ResourceGroup = $PolicyState.ResourceGroup
+                $report.ResourceID = $PolicyState.ResourceID
+                $report.ResourceLocation = $PolicyState.ResourceLocation
+                $report.ResourceType = $PolicyState.ResourceType
+                $report.ComplianceState = $PolicyState.ComplianceState
+
+                # Export report to CSV based on output mode
+                if ($fileOutputMode -eq "Single" -or $fileOutputMode -eq "Both") {
+                    $report | Export-CSV -Path $csvPath -Append -NoTypeInformation
+                }
+
+                if ($fileOutputMode -eq "Separate" -or $fileOutputMode -eq "Both") {
+                    $singleCsvPath = "Output-PolicyComplianceStates-$($subscription.Name).csv"
+                    $report | Export-CSV -Path $singleCsvPath -Append -NoTypeInformation
+                }
+
+                $Count++
+            } catch {
+                Write-Warning "Error processing policy state: $_"
+                continue
+            }
+        }
+    }
+    Write-Progress -Activity "Complete" -Status "Operation Finished" -Completed
+
+    Write-Host "`nScript completed successfully." -ForegroundColor Green
+
+    if ($fileOutputMode -eq "Single") {
+        Write-Host "Results exported to: $csvPath" -ForegroundColor Cyan
+    } elseif ($fileOutputMode -eq "Separate") {
+        Write-Host "Separate files created for each subscription" -ForegroundColor Cyan
+    } elseif ($fileOutputMode -eq "Both") {
+        Write-Host "Results exported to: $csvPath (master file)" -ForegroundColor Cyan
+        Write-Host "Separate files created for each subscription" -ForegroundColor Cyan
+    }
+}
+catch {
+    Write-Error "An error occurred: $_"
+    exit 1
+}
+
 
 #Get-azPolicyExcemption logic - coming soon
